@@ -16,6 +16,7 @@ from helper_ggcnn.gridshow import gridshow
 import helper_ggcnn.tf_helpers as tfh
 # Ros 3rd party package darknet_ros
 from darknet_ros_msgs.msg import BoundingBoxes
+from scipy.spatial.transform import Rotation
 
 
 class GGCNN_humanseg:
@@ -90,6 +91,7 @@ class GGCNN_humanseg:
 
     # GGCNN
     def _ggcnn(self): 
+        # print('1')
 
         t_start = rospy.get_time()       
 
@@ -109,11 +111,18 @@ class GGCNN_humanseg:
 
         mask_ggcnn = process_depth_image(depth=mask_bg, crop_size=self.crop_size, 
                                         out_size=self.out_size, crop_y_offset=self.crop_offset)
+        # print('2')
         
         # Calculate GGCNN
         points, angle, width_img, _ = predict(depth=depth_ggcnn, mask=mask_ggcnn,
                                               crop_size=self.crop_size, out_size=self.out_size, 
                                               crop_y_offset=self.crop_offset, filters=(2.0, 2.0, 2.0))
+        # print('3')
+
+        # print(np.max(points))
+        # a = int(np.argmax(points)/300)
+        # b = np.argmax(points) - 300*a
+        # print(points[a,b])
 
         # Post-processing angle
         angle -= np.arcsin(cam_rot[0, 1])  # Correct for the rotation of the camera
@@ -124,11 +133,15 @@ class GGCNN_humanseg:
         x = ((np.vstack((np.linspace((imw - self.crop_size) // 2, (imw - self.crop_size) // 2 + self.crop_size, depth_ggcnn.shape[1], np.float), )*depth_ggcnn.shape[0]) - self.cam_K[0, 2])/self.cam_K[0, 0] * depth_ggcnn).flatten()
         y = ((np.vstack((np.linspace((imh - self.crop_size) // 2 - self.crop_offset, (imh - self.crop_size) // 2 + self.crop_size - self.crop_offset, depth_ggcnn.shape[0], np.float), )*depth_ggcnn.shape[1]).T - self.cam_K[1,2])/self.cam_K[1, 1] * depth_ggcnn).flatten()
         pos = np.dot(cam_rot, np.stack((x, y, depth_ggcnn.flatten()))).T + np.array([[cam_p.x, cam_p.y, cam_p.z]])
+        # print(pos.shape)
+
 
         width_m = width_img / 300.0 * 2.0 * depth_ggcnn * np.tan(self.cam_fov * self.crop_size/self.depth.shape[0] / 2.0 / 180.0 * np.pi)
 
         best_g = np.argmax(points)
         best_g_unr = np.unravel_index(best_g, points.shape)
+        # print(best_g_unr)
+        # print(points[best_g_unr[0],best_g_unr[1]])
 
         # Create message
         pred = GraspPrediction()
@@ -144,7 +157,21 @@ class GGCNN_humanseg:
 
         pred.width = width_m[best_g_unr]
         pred.quality = points[best_g_unr]
-        
+
+        degree_Values = np.degrees(angle[best_g_unr]) 
+        print("Angle", degree_Values)
+
+        rot = Rotation.from_euler('xyz', [degree_Values, 0, 0], degrees=True)
+
+        # Convert to quaternions and print
+        rot_quat = rot.as_quat()
+
+        # Add to pose msgs				
+        pred.pose.orientation.x = rot_quat[0]
+        pred.pose.orientation.y = rot_quat[1]
+        pred.pose.orientation.z = rot_quat[2]
+        pred.pose.orientation.w = rot_quat[3]
+
         # Visualization
         if self.visualization_type:
 
@@ -167,6 +194,7 @@ class GGCNN_humanseg:
 
             # Publish rviz pose
             tfh.publish_pose_as_transform(pred.pose, 'panda_link0', 'best_G', 0.5)
+            
 
         print('GGCNN successful. Current Hz-rate:\t' + str(1/(rospy.get_time() - t_start)))
 
@@ -194,34 +222,36 @@ class GGCNN_humanseg:
 
     def _callback_depth(self, msg):
         self.depth = self.bridge.imgmsg_to_cv2(msg)
+        self.depth = self.depth/1000.0
         self.depth_nan = np.isnan(self.depth).astype(np.uint8)
         self.init_depth = True
 
         # Get pose
-        self.last_image_pose = tfh.current_robot_pose(self.base_frame, self.cam_frame)
-
+        # self.last_image_pose = tfh.current_robot_pose(self.base_frame, self.cam_frame) // for ViperX
+        self.last_image_pose = tfh.current_robot_pose(self.cam_frame, self.cam_frame)
+        
+        
         # GGCNN
-        print(self.last_image_pose)
         print(self.init_body, self.init_hand, self.init_box)
         if not (self.last_image_pose == None):
             if self.init_body and self.init_hand and self.init_box:
+                print('GGCNN pred ...')
                 self._ggcnn()
 
     def _callback_bodyparts(self, msg):
         self.mask_body = self.bridge.compressed_imgmsg_to_cv2(msg)
-        self.init_body = True        
+        self.init_body = True     
 
     def _callback_egohands(self, msg):
         self.mask_hand = self.bridge.compressed_imgmsg_to_cv2(msg)
         self.init_hand = True
 
-    def _callback_darknet(self, msg):
 
+    def _callback_darknet(self, msg):
         if (self.init_depth):
 
             depth_nan = self.depth.copy().astype(np.float32)
             depth_nan[self.depth == 0] = np.nan
-            depth_nan[self.depth >= self.dist_ignore] = np.nan
             depth_nan[self.mask_body != 0] = np.nan
             depth_nan[self.mask_hand != 0] = np.nan
 
