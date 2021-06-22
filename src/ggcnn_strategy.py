@@ -44,7 +44,7 @@ class MedicalMoveGroup(object):
 		joint_state_topic = ['joint_states:=/vx300s/joint_states']
 		moveit_commander.roscpp_initialize(joint_state_topic)
 		moveit_commander.roscpp_initialize(sys.argv)
-		rospy.init_node('obman_stragety', anonymous=True)
+		rospy.init_node('ggcnn_strategy', anonymous=True)
 
 		## Get the name of the robot - this will be used to properly define the end-effector link when adding a box
 		self.robot_name = rospy.get_param("~robot_name","vx300s")
